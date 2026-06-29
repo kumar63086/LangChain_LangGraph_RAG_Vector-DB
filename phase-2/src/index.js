@@ -1,6 +1,9 @@
 import express from "express";
 import dotenv from "dotenv";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import fs from "fs";
+import { PDFParse } from "pdf-parse"
+import path from "path";
 
 dotenv.config();
 
@@ -9,23 +12,46 @@ const PORT = process.env.PORT || 8000;
 
 app.use(express.json());
 
-// Check if API key is loaded
+// Check API Key
 if (!process.env.GEMINI_API_KEY) {
-  console.error("❌ GEMINI_API_KEY is missing in .env file");
+  console.error("❌ GEMINI_API_KEY is missing");
   process.exit(1);
 }
 
-// Initialize Gemini LLM
+// Gemini Model
 const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
   apiKey: process.env.GEMINI_API_KEY,
+  temperature: 0.7,
+  maxRetries: 5,
+  maxOutputTokens: 500,
 });
+
+// Store PDF text globally
+let pdfText = "";
+
+// Read PDF
+const upload = async () => {
+  try {
+     const pdfPath = path.resolve("knowledge.pdf")
+    const buffer = fs.readFileSync(pdfPath)
+    const pdfResult = new PDFParse({ data: buffer })
+    const result = await pdfResult.getText()
+    const text = result.text
+   
+  } catch (error) {
+    console.error("❌ PDF Error:", error.message);
+  }
+};
+
+// Load PDF before starting server
+await upload();
 
 // Home Route
 app.get("/", (req, res) => {
-  res.status(200).json({
+  res.json({
     success: true,
-    message: "AI Learning Developer 🚀",
+    message: "Gemini + PDF AI Server Running 🚀",
   });
 });
 
@@ -41,10 +67,27 @@ app.post("/ai", async (req, res) => {
       });
     }
 
-    const result = await llm.invoke(input);
+    const prompt = `
+You are an AI assistant.
+
+Answer ONLY using the following PDF content.
+
+-------------------------
+${pdfText}
+-------------------------
+
+Question:
+${input}
+
+If the answer is not present in the document, say:
+"I couldn't find this information in the provided document."
+`;
+
+    const result = await llm.invoke(prompt);
 
     return res.status(200).json({
       success: true,
+      question: input,
       response: result.content,
     });
   } catch (error) {
@@ -60,5 +103,5 @@ app.post("/ai", async (req, res) => {
 
 // Start Server
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server Running at http://localhost:${PORT}`);
 });
