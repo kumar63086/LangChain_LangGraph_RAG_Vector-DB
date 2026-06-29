@@ -1,9 +1,13 @@
 import express from "express";
 import dotenv from "dotenv";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import fs from "fs";
 import { PDFParse } from "pdf-parse"
 import path from "path";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters"
+import { TaskType } from "@google/generative-ai";
+import { QdrantVectorStore } from "@langchain/qdrant"
+import { HumanMessage, SystemMessage } from "@langchain/core/messages"
 
 dotenv.config();
 
@@ -26,6 +30,17 @@ const llm = new ChatGoogleGenerativeAI({
   maxRetries: 5,
   maxOutputTokens: 500,
 });
+const embeddings = new GoogleGenerativeAIEmbeddings({
+    model: "gemini-embedding-001", // 768 dimensions
+    taskType: TaskType.RETRIEVAL_DOCUMENT,
+    title: "Document title",
+    apiKey: process.env.GEMINI_API_KEY,
+});
+
+const vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
+    url: process.env.QDRANT_URL,
+    collectionName: "grocery-store",
+});
 
 // Store PDF text globally
 let pdfText = "";
@@ -38,6 +53,13 @@ const upload = async () => {
     const pdfResult = new PDFParse({ data: buffer })
     const result = await pdfResult.getText()
     const text = result.text
+    const spilitter = new RecursiveCharacterTextSplitter({
+        chunkSize: 1000,
+        chunkOverlap: 200
+    })
+    const docs = await spilitter.createDocuments([text])
+    // console.log(docs);
+     await vectorStore.addDocuments(docs)
    
   } catch (error) {
     console.error("❌ PDF Error:", error.message);
@@ -46,6 +68,10 @@ const upload = async () => {
 
 // Load PDF before starting server
 await upload();
+
+
+
+
 
 // Home Route
 app.get("/", (req, res) => {
@@ -67,23 +93,23 @@ app.post("/ai", async (req, res) => {
       });
     }
 
-    const prompt = `
-You are an AI assistant.
+ const docs = await vectorStore.similaritySearch(input, 5)
+    const context = docs.map((d) => d.pageContent).join("/n")
 
-Answer ONLY using the following PDF content.
+    const result = await llm.invoke([
+        new SystemMessage(`You are a RAG AI assistant.
 
--------------------------
-${pdfText}
--------------------------
+STRICT RULES:
+- Answer ONLY from context
+- Do not use outside knowledge
+- If answer not found say:
+  "I don't know from uploaded PDF."
 
-Question:
-${input}
-
-If the answer is not present in the document, say:
-"I couldn't find this information in the provided document."
-`;
-
-    const result = await llm.invoke(prompt);
+Context:
+${context}`)
+,
+new HumanMessage(input)
+    ])
 
     return res.status(200).json({
       success: true,
